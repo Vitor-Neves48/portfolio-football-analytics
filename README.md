@@ -1,4 +1,4 @@
-🎓 # Football Data Analytics Portfolio ⚽
+# 🎓 Football Data Analytics Portfolio ⚽
 Welcome to my Football Data Analytics portfolio, which documents my ongoing learning journey in this field. Here, you’ll find a variety of projects where I’ve replicated and adapted work from other creators, applying their methodologies to different case studies as a way to deepen my understanding of the techniques involved. All such work is properly credited to the original authors.
 
 Throughout this portfolio, I use a wide range of tools—including packages, modules, and functions—from external repositories. These are always clearly referenced to help guide the reader and ensure reproducibility. Just as I value well-documented and accessible projects that support learning, I strive to follow those same principles in my own work. Tools I’ve personally developed to streamline analyses can be found in the Analysis Tools folder.
