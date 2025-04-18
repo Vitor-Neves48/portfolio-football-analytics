@@ -2,6 +2,10 @@ import pandas as pd
 import numpy as np
 import re
 import warnings
+import locale
+import soccerdata as sd
+import time
+import os
 
 optaQualifierCodes = {
     0: "shotSixYardBox",
@@ -226,9 +230,272 @@ optaQualifierCodes = {
 }
 
 
+def smart_title(col_name):
+    def preserve_xg(word):
+        return "xG" if word.lower() == "xg" else word.title()
+
+    # Function to title only the parts outside of parentheses
+    return re.sub(
+        r"([^\(\)]+)(?=(?:\([^\)]*\))?|$)",  # match text outside parentheses
+        lambda m: " ".join(preserve_xg(word) for word in m.group(1).split()),
+        col_name,
+    )
+
+
+def fotmob_get_all_team_stats_df(team_name: str, leagues, seasons):
+    """
+    Retrieves and merges various match statistics for a given team from FotMob for specified leagues and seasons.
+
+    This function pulls match data across multiple categories (e.g., Shots, Expected Goals, Passes, etc.)
+    for a specified team, merges them into a single DataFrame, and processes the data to ensure that the
+    resulting DataFrame contains relevant statistics such as 'match date' and 'Opponent'.
+
+    The function also processes the 'game' column to split it into 'match date' and 'matchup', and
+    extracts the opponent's team name using a custom function.
+
+    Parameters
+    ----------
+    team_name : str
+        The name of the team for which to retrieve statistics.
+    leagues : str
+        The leagues for which to fetch the data (in FotMob's league format, e.g., "PRT-Liga Portugal").
+    seasons : str
+        The seasons for which to fetch the data (e.g., "2024/2025").
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing the merged match statistics for the specified team, with columns:
+        ['league', 'season', 'team', 'match date', 'Opponent', 'matchup', and various match statistics].
+
+    Notes
+    -----
+    - The 'game' column is split into two parts: 'match date' (date of the match) and 'matchup' (team vs. opponent).
+    - The 'Opponent' column is derived from the 'matchup' column, identifying the opposing team for each match.
+    - This function assumes the columns in the match stats DataFrames from FotMob share consistent naming conventions.
+    """
+
+    # Set locale for consistent date formatting
+    locale.setlocale(locale.LC_TIME, "en_US.UTF-8")
+    fotmob = sd.FotMob(leagues, seasons, no_cache=False, no_store=False)
+    locale.setlocale(locale.LC_TIME, "en_US.UTF-8")
+
+    # Read each stats category for the specified team
+    top_stats = fotmob.read_team_match_stats("Top stats", True, team_name).reset_index()
+    time.sleep(5)
+    shots = fotmob.read_team_match_stats("Shots", True, team_name).reset_index()
+    time.sleep(5)
+    xg = fotmob.read_team_match_stats(
+        "Expected goals (xG)", True, team_name
+    ).reset_index()
+    time.sleep(5)
+    passes = fotmob.read_team_match_stats("Passes", True, team_name).reset_index()
+    time.sleep(5)
+    defence = fotmob.read_team_match_stats("Defence", True, team_name).reset_index()
+    time.sleep(5)
+    duels = fotmob.read_team_match_stats("Duels", True, team_name).reset_index()
+    time.sleep(5)
+    discipline = fotmob.read_team_match_stats(
+        "Discipline", True, team_name
+    ).reset_index()
+    time.sleep(5)
+
+    # Merge all into a single DataFrame
+    df_merged = (
+        shots.merge(xg, on=["league", "season", "team", "game"], how="outer")
+        .merge(passes, on=["league", "season", "team", "game"], how="outer")
+        .merge(defence, on=["league", "season", "team", "game"], how="outer")
+        .merge(duels, on=["league", "season", "team", "game"], how="outer")
+        .merge(discipline, on=["league", "season", "team", "game"], how="outer")
+    )
+
+    # Define the columns to keep from Top_stats (including the merge keys)
+    merge_keys = ["league", "season", "team", "game"]
+    top_stats_cols = merge_keys + [
+        "Big chances missed",
+        "Corners",
+        "Ball possession",
+        "Fouls committed",
+        "Big chances",
+    ]
+
+    # Filter Top_stats to only the necessary columns
+    top_stats_filtered = top_stats[
+        top_stats_cols
+    ]  # this is the merge_keys cols + the columns that are not yet in FC Porto
+
+    # Merge with FCPorto
+    df_merged = df_merged.merge(top_stats_filtered, on=merge_keys, how="left")
+
+    df_merged[["match date", "matchup"]] = df_merged["game"].str.split(
+        " ", n=1, expand=True
+    )
+
+    df_merged["Opponent"] = df_merged.apply(extract_opponent_from_matchup, axis=1)
+
+    df_merged.drop(columns=["game"], inplace=True)
+    cols = df_merged.columns.tolist()
+    # Remove 'match date' and 'Opponent' from current position
+    cols.remove("match date")
+    cols.remove("Opponent")
+    cols.remove("matchup")
+    # Find the index of 'season' and 'team'
+    season_idx = cols.index("season")
+    team_idx = cols.index("team")
+    # Insert 'match date' after 'season' and 'Opponent' after 'team'
+    cols.insert(season_idx + 1, "match date")
+    cols.insert(
+        team_idx + 2, "Opponent"
+    )  # +2 because we just inserted one column before
+    match_date_idx = cols.index("match date")
+    cols.insert(match_date_idx + 1, "matchup")
+    # Reorder the DataFrame
+    df_merged = df_merged[cols]
+
+    return df_merged
+
+
+def mod_fotmob_get_all_team_stats_df(team_name: str, leagues, seasons):
+    """
+    Retrieves and merges various match statistics for a given team from FotMob for specified leagues and seasons.
+
+    This function pulls match data across multiple categories (e.g., Shots, Expected Goals, Passes, etc.)
+    for a specified team, merges them into a single DataFrame, and processes the data to ensure that the
+    resulting DataFrame contains relevant statistics such as 'match date' and 'Opponent'.
+
+    The function also processes the 'game' column to split it into 'match date' and 'matchup', and
+    extracts the opponent's team name using a custom function.
+
+    Parameters
+    ----------
+    team_name : str
+        The name of the team for which to retrieve statistics.
+    leagues : str
+        The leagues for which to fetch the data (in FotMob's league format, e.g., "PRT-Liga Portugal").
+    seasons : str
+        The seasons for which to fetch the data (e.g., "2024/2025").
+
+    Returns
+    -------
+    pd.DataFrame
+        A DataFrame containing the merged match statistics for the specified team, with columns:
+        ['league', 'season', 'team', 'match date', 'Opponent', 'matchup', and various match statistics].
+
+    Notes
+    -----
+    - The 'game' column is split into two parts: 'match date' (date of the match) and 'matchup' (team vs. opponent).
+    - The 'Opponent' column is derived from the 'matchup' column, identifying the opposing team for each match.
+    - This function assumes the columns in the match stats DataFrames from FotMob share consistent naming conventions.
+    """
+
+    # Set locale for consistent date formatting
+    locale.setlocale(locale.LC_TIME, "en_US.UTF-8")
+    fotmob = sd.FotMob(leagues, seasons, no_cache=False, no_store=False)
+    locale.setlocale(locale.LC_TIME, "en_US.UTF-8")
+
+    # Read each stats category for the specified team
+    top_stats = fotmob.mod_read_team_match_stats(
+        "Top stats", True, team_name
+    ).reset_index()
+    time.sleep(5)
+    shots = fotmob.mod_read_team_match_stats("Shots", True, team_name).reset_index()
+    time.sleep(5)
+    xg = fotmob.mod_read_team_match_stats(
+        "Expected goals (xG)", True, team_name
+    ).reset_index()
+    time.sleep(5)
+    passes = fotmob.mod_read_team_match_stats("Passes", True, team_name).reset_index()
+    time.sleep(5)
+    defence = fotmob.mod_read_team_match_stats("Defence", True, team_name).reset_index()
+    time.sleep(5)
+    duels = fotmob.mod_read_team_match_stats("Duels", True, team_name).reset_index()
+    time.sleep(5)
+    discipline = fotmob.mod_read_team_match_stats(
+        "Discipline", True, team_name
+    ).reset_index()
+    time.sleep(5)
+
+    # Merge all into a single DataFrame
+    df_merged = (
+        shots.merge(xg, on=["league", "season", "team", "game"], how="outer")
+        .merge(passes, on=["league", "season", "team", "game"], how="outer")
+        .merge(defence, on=["league", "season", "team", "game"], how="outer")
+        .merge(duels, on=["league", "season", "team", "game"], how="outer")
+        .merge(discipline, on=["league", "season", "team", "game"], how="outer")
+    )
+
+    # Define the columns to keep from Top_stats (including the merge keys)
+    merge_keys = ["league", "season", "team", "game"]
+    top_stats_cols = merge_keys + [
+        "Big chances missed",
+        "Corners",
+        "Ball possession",
+        "Fouls committed",
+        "Big chances",
+    ]
+
+    # Filter Top_stats to only the necessary columns
+    top_stats_filtered = top_stats[
+        top_stats_cols
+    ]  # this is the merge_keys cols + the columns that are not yet in FC Porto
+
+    # Merge with FCPorto
+    df_merged = df_merged.merge(top_stats_filtered, on=merge_keys, how="left")
+
+    df_merged[["match date", "matchup"]] = df_merged["game"].str.split(
+        " ", n=1, expand=True
+    )
+
+    df_merged["Opponent"] = df_merged.apply(extract_opponent_from_matchup, axis=1)
+
+    df_merged.drop(columns=["game"], inplace=True)
+    cols = df_merged.columns.tolist()
+    # Remove 'match date' and 'Opponent' from current position
+    cols.remove("match date")
+    cols.remove("Opponent")
+    cols.remove("matchup")
+    # Find the index of 'season' and 'team'
+    season_idx = cols.index("season")
+    team_idx = cols.index("team")
+    # Insert 'match date' after 'season' and 'Opponent' after 'team'
+    cols.insert(season_idx + 1, "match date")
+    cols.insert(
+        team_idx + 2, "Opponent"
+    )  # +2 because we just inserted one column before
+    match_date_idx = cols.index("match date")
+    cols.insert(match_date_idx + 1, "matchup")
+    # Reorder the DataFrame
+    df_merged = df_merged[cols]
+
+    return df_merged
+
+
+def extract_opponent_from_matchup(row):
+    # Split the matchup string on the '-' character.
+    parts = row["matchup"].split("-", 1)
+
+    # There should be 2 parts in a valid matchup.
+    if len(parts) != 2:
+        return None  # or you can return the original string, or some error value
+
+    # Strip any extra whitespace
+    part1 = parts[0].strip()
+    part2 = parts[1].strip()
+
+    # Check which part equals the 'team' and return the other as the opponent.
+    if part1 == row["team"]:
+        return part2
+    elif part2 == row["team"]:
+        return part1
+    else:
+        # If neither part exactly matches the team name,
+        # you may want to handle this case separately.
+        return None
+
+
 def standardize_team_names(df, column, new_column=None):
     """
-    Standardizes club names in a DataFrame column based on a fixed internal mapping. Finds team names in a certain column and maps those names to those described is the name_mapping dictionary. This dictionary can be expanded upon.
+    Standardizes club names in a DataFrame column based on a fixed internal mapping.
 
     Parameters
     ----------
@@ -910,3 +1177,601 @@ def prep_rolling_plot_df(df, team):
 
     return final_df
 
+
+def clean_FotMob_all_team_stats_df(df, league, season):
+    # Clean input df
+    df[["Home Team", "Away Team"]] = df["matchup"].str.split("-", expand=True)
+    df["Home Team"] = df["Home Team"].str.strip()
+    df["Away Team"] = df["Away Team"].str.strip()
+
+    Home_df = df[df["team"] == df["Home Team"]]
+    Away_df = df[df["team"] == df["Away Team"]]
+    home_rename = {
+        "Blocked shots": "Home Blocked shots",
+        "Hit woodwork": "Home Hit woodwork",
+        "Shots inside box": "Home Shots inside box",
+        "Shots off target": "Home Shots off target",
+        "Shots on target": "Home Shots on target",
+        "Shots outside box": "Home Shots outside box",
+        "Total shots": "Home Total shots",
+        "Expected goals (xG)": "Home Expected goals (xG)",
+        "xG non-penalty": "Home xG non-penalty",
+        "xG on target (xGOT)": "Home xG on target (xGOT)",
+        "xG open play": "Home xG open play",
+        "xG set play": "Home xG set play",
+        "Accurate crosses": "Home Accurate crosses",
+        "Accurate long balls": "Home Accurate long balls",
+        "Accurate passes": "Home Accurate passes",
+        "Offsides": "Home Offsides",
+        "Opposition half": "Home Opposition half",
+        "Own half": "Home Own half",
+        "Passes": "Home Passes",
+        "Throws": "Home Throws",
+        "Touches in opposition box": "Home Touches in opposition box",
+        "Accurate crosses (%)": "Home Accurate crosses (%)",
+        "Accurate long balls (%)": "Home Accurate long balls (%)",
+        "Accurate passes (%)": "Home Accurate passes (%)",
+        "Blocks": "Home Blocks",
+        "Clearances": "Home Clearances",
+        "Interceptions": "Home Interceptions",
+        "Keeper saves": "Home Keeper saves",
+        "Tackles won": "Home Tackles won",
+        "Tackles won (%)": "Home Tackles won (%)",
+        "Aerial duels won": "Home Aerial duels won",
+        "Duels won": "Home Duels won",
+        "Ground duels won": "Home Ground duels won",
+        "Successful dribbles": "Home Successful dribbles",
+        "Aerial duels won (%)": "Home Aerial duels won (%)",
+        "Ground duels won (%)": "Home Ground duels won (%)",
+        "Successful dribbles (%)": "Home Successful dribbles (%)",
+        "Red cards": "Home Red cards",
+        "Yellow cards": "Home Yellow cards",
+        "Big chances missed": "Home Big chances missed",
+        "Corners": "Home Corners",
+        "Ball possession": "Home Ball possession",
+        "Fouls committed": "Home Fouls committed",
+        "Big chances": "Home Big chances",
+    }
+
+    away_rename = {
+        "Blocked shots": "Away Blocked shots",
+        "Hit woodwork": "Away Hit woodwork",
+        "Shots inside box": "Away Shots inside box",
+        "Shots off target": "Away Shots off target",
+        "Shots on target": "Away Shots on target",
+        "Shots outside box": "Away Shots outside box",
+        "Total shots": "Away Total shots",
+        "Expected goals (xG)": "Away Expected goals (xG)",
+        "xG non-penalty": "Away xG non-penalty",
+        "xG on target (xGOT)": "Away xG on target (xGOT)",
+        "xG open play": "Away xG open play",
+        "xG set play": "Away xG set play",
+        "Accurate crosses": "Away Accurate crosses",
+        "Accurate long balls": "Away Accurate long balls",
+        "Accurate passes": "Away Accurate passes",
+        "Offsides": "Away Offsides",
+        "Opposition half": "Away Opposition half",
+        "Own half": "Away Own half",
+        "Passes": "Away Passes",
+        "Throws": "Away Throws",
+        "Touches in opposition box": "Away Touches in opposition box",
+        "Accurate crosses (%)": "Away Accurate crosses (%)",
+        "Accurate long balls (%)": "Away Accurate long balls (%)",
+        "Accurate passes (%)": "Away Accurate passes (%)",
+        "Blocks": "Away Blocks",
+        "Clearances": "Away Clearances",
+        "Interceptions": "Away Interceptions",
+        "Keeper saves": "Away Keeper saves",
+        "Tackles won": "Away Tackles won",
+        "Tackles won (%)": "Away Tackles won (%)",
+        "Aerial duels won": "Away Aerial duels won",
+        "Duels won": "Away Duels won",
+        "Ground duels won": "Away Ground duels won",
+        "Successful dribbles": "Away Successful dribbles",
+        "Aerial duels won (%)": "Away Aerial duels won (%)",
+        "Ground duels won (%)": "Away Ground duels won (%)",
+        "Successful dribbles (%)": "Away Successful dribbles (%)",
+        "Red cards": "Away Red cards",
+        "Yellow cards": "Away Yellow cards",
+        "Big chances missed": "Away Big chances missed",
+        "Corners": "Away Corners",
+        "Ball possession": "Away Ball possession",
+        "Fouls committed": "Away Fouls committed",
+        "Big chances": "Away Big chances",
+    }
+
+    Home_df.rename(columns=home_rename, inplace=True)
+    Away_df.rename(columns=away_rename, inplace=True)
+
+    home_cols = Home_df.columns.tolist()
+    home_cols.remove("Home Team")
+    home_cols.remove("Away Team")
+    # Find the index of 'season' and 'team'
+    home_matchup_idx = home_cols.index("matchup")
+    home_team_idx = home_cols.index("team")
+    # Insert 'match date' after 'season' and 'Opponent' after 'team'
+    home_cols.insert(home_matchup_idx + 1, "Home Team")
+    home_cols.insert(
+        home_team_idx + 2, "Away Team"
+    )  # +2 because we just inserted one column before
+    Home_df = Home_df[home_cols]
+    Home_df.drop(columns=["team", "Opponent"], inplace=True)
+
+    away_cols = Away_df.columns.tolist()
+    away_cols.remove("Home Team")
+    away_cols.remove("Away Team")
+    # Find the index of 'season' and 'team'
+    away_matchup_idx = away_cols.index("matchup")
+    away_team_idx = away_cols.index("team")
+    # Insert 'match date' after 'season' and 'Opponent' after 'team'
+    away_cols.insert(away_matchup_idx + 1, "Home Team")
+    away_cols.insert(
+        away_team_idx + 2, "Away Team"
+    )  # +2 because we just inserted one column before
+    Away_df = Away_df[away_cols]
+    Away_df.drop(columns=["team", "Opponent"], inplace=True)
+
+    # Concatenate Home and Away DataFrames
+    df = pd.merge(
+        Home_df,
+        Away_df,
+        on=["league", "season", "match date", "matchup", "Home Team", "Away Team"],
+        how="left",
+    )
+
+    # Get ancilliary df
+    locale.setlocale(locale.LC_TIME, "en_US.UTF-8")
+    fotmob = sd.FotMob(leagues=league, seasons=season, no_cache=False, no_store=False)
+    df2 = fotmob.read_schedule()
+    df2.reset_index(inplace=True)
+    # Clean ancialliary df
+    df2[["match date", "matchup"]] = df2["game"].str.split(" ", n=1, expand=True)
+    df2[["Home Team", "Away team"]] = df2["matchup"].str.split("-", n=1, expand=True)
+    df2["Home Team"] = df2["Home Team"].str.strip()
+    df2["Away team"] = df2["Away team"].str.strip()
+    df2.rename(columns={"Away team": "Away Team"}, inplace=True)
+
+    final_df = pd.merge(
+        df,
+        df2[
+            [
+                "league",
+                "season",
+                "match date",
+                "matchup",
+                "home_team",
+                "away_team",
+                "round",
+                "home_score",
+                "away_score",
+                "game_id",
+            ]
+        ],
+        left_on=["league", "season", "match date", "matchup", "Home Team", "Away Team"],
+        right_on=[
+            "league",
+            "season",
+            "match date",
+            "matchup",
+            "home_team",
+            "away_team",
+        ],
+        how="left",
+    )
+    # Clean final df
+    final_df.drop(columns=["home_team", "away_team"], inplace=True)
+    rename2 = {
+        "home_score": "Home Score",
+        "away_score": "Away Score",
+        "round": "Round",
+        "game_id": "Game ID",
+    }
+
+    final_df.rename(columns=rename2, inplace=True)
+
+    final_cols = final_df.columns.tolist()
+    final_cols.remove("Home Score")
+    final_cols.remove("Away Score")
+    final_cols.remove("Round")
+    final_cols.remove("Game ID")
+    # Find the index of 'season' and 'team'
+    away_matchup_idx = away_cols.index("matchup")
+    # Insert 'match date' after 'season' and 'Opponent' after 'team'
+    final_cols.insert(away_matchup_idx + 2, "Home Score")
+    final_cols.insert(away_matchup_idx + 3, "Away Score")
+    final_cols.insert(away_matchup_idx - 1, "Round")
+    final_cols.insert(away_matchup_idx - 1, "Game ID")
+    final_df = final_df[final_cols]
+
+    final_rename = {
+        "league": "League",
+        "season": "Season",
+        "match date": "Match Date",
+        "matchup": "Matchup",
+    }
+
+    final_df.rename(columns=final_rename, inplace=True)
+
+    dtypes = {
+        "League": str,
+        "Season": str,
+        "Game ID": int,
+        "Round": int,
+        "Match Date": "datetime64[ns]",
+        "Matchup": str,
+        "Home Team": str,
+        "Home Score": int,
+        "Away Score": int,
+        "Away Team": str,
+        "Home Blocked shots": float,
+        "Home Hit woodwork": float,
+        "Home Shots inside box": float,
+        "Home Shots off target": float,
+        "Home Shots on target": float,
+        "Home Shots outside box": float,
+        "Home Total shots": float,
+        "Home Expected goals (xG)": float,
+        "Home xG non-penalty": float,
+        "Home xG on target (xGOT)": float,
+        "Home xG open play": float,
+        "Home xG set play": float,
+        "Home Accurate crosses": float,
+        "Home Accurate long balls": float,
+        "Home Accurate passes": float,
+        "Home Offsides": float,
+        "Home Opposition half": float,
+        "Home Own half": float,
+        "Home Passes": float,
+        "Home Throws": float,
+        "Home Touches in opposition box": float,
+        "Home Accurate crosses (%)": float,
+        "Home Accurate long balls (%)": float,
+        "Home Accurate passes (%)": float,
+        "Home Blocks": float,
+        "Home Clearances": float,
+        "Home Interceptions": float,
+        "Home Keeper saves": float,
+        "Home Tackles won": float,
+        "Home Tackles won (%)": float,
+        "Home Aerial duels won": float,
+        "Home Duels won": float,
+        "Home Ground duels won": float,
+        "Home Successful dribbles": float,
+        "Home Aerial duels won (%)": float,
+        "Home Ground duels won (%)": float,
+        "Home Successful dribbles (%)": float,
+        "Home Red cards": float,
+        "Home Yellow cards": float,
+        "Home Big chances missed": float,
+        "Home Corners": float,
+        "Home Ball possession": float,
+        "Home Fouls committed": float,
+        "Home Big chances": float,
+        "Away Blocked shots": float,
+        "Away Hit woodwork": float,
+        "Away Shots inside box": float,
+        "Away Shots off target": float,
+        "Away Shots on target": float,
+        "Away Shots outside box": float,
+        "Away Total shots": float,
+        "Away Expected goals (xG)": float,
+        "Away xG non-penalty": float,
+        "Away xG on target (xGOT)": float,
+        "Away xG open play": float,
+        "Away xG set play": float,
+        "Away Accurate crosses": float,
+        "Away Accurate long balls": float,
+        "Away Accurate passes": float,
+        "Away Offsides": float,
+        "Away Opposition half": float,
+        "Away Own half": float,
+        "Away Passes": float,
+        "Away Throws": float,
+        "Away Touches in opposition box": float,
+        "Away Accurate crosses (%)": float,
+        "Away Accurate long balls (%)": float,
+        "Away Accurate passes (%)": float,
+        "Away Blocks": float,
+        "Away Clearances": float,
+        "Away Interceptions": float,
+        "Away Keeper saves": float,
+        "Away Tackles won": float,
+        "Away Tackles won (%)": float,
+        "Away Aerial duels won": float,
+        "Away Duels won": float,
+        "Away Ground duels won": float,
+        "Away Successful dribbles": float,
+        "Away Aerial duels won (%)": float,
+        "Away Ground duels won (%)": float,
+        "Away Successful dribbles (%)": float,
+        "Away Red cards": float,
+        "Away Yellow cards": float,
+        "Away Big chances missed": float,
+        "Away Corners": float,
+        "Away Ball possession": float,
+        "Away Fouls committed": float,
+        "Away Big chances": float,
+    }
+    final_df = final_df.astype(dtypes)
+    final_df["Season"] = (
+        final_df["Season"].astype(str).str[:2]
+        + "/"
+        + final_df["Season"].astype(str).str[2:]
+    )
+
+    final_df = final_df.sort_values(
+        by=["Match Date", "Round"], ascending=True, ignore_index=True
+    )
+
+    season_name = season.replace("/", "_")
+    league_name = league.replace("-", "_")
+
+    final_df.columns = [smart_title(col) for col in final_df.columns]
+    folder_league_name = league.split("-")[1]
+
+    # read and insert Club's badges
+    final_df["Home Team Badge"] = final_df["Home Team"].apply(
+        lambda x: rf"C:\Users\Vitor\Desktop\Football Data Analytics\My_Projects\Main level\media\team_logos\{folder_league_name}\{x.lower()}.png"
+    )
+    final_df["Away Team Badge"] = final_df["Away Team"].apply(
+        lambda x: rf"C:\Users\Vitor\Desktop\Football Data Analytics\My_Projects\Main level\media\team_logos\{folder_league_name}\{x.lower()}.png"
+    )
+
+    # Create directory to store data
+    output_dir = r"C:\Users\Vitor\Desktop\Football Data Analytics\My_Projects\Main level\data\clean_all_team_stats"
+    os.makedirs(output_dir, exist_ok=True)
+
+    final_df.to_parquet(
+        rf"{output_dir}\FotMob_clean_advanced_team_stats_{league_name}_{season_name}.parquet"
+    )
+    return final_df
+
+
+def sum_FotMob_advanced_team_stats_df(df, league, season):
+    """
+    Aggregates advanced team statistics from FotMob data by summing numeric columns grouped by team.
+    The input DataFrame must be the raw output from `mod_fotmob_get_all_team_stats_df`.
+
+    Parameters:
+    -----------
+    df : pandas.DataFrame
+        The input DataFrame containing raw FotMob team stats. Must include columns:
+        - "team", "league", "season", "match date", and all numeric stat columns (e.g., "Shots on target").
+    league : str
+        The league name (e.g., "ENG-Premier-League"). Used for file naming.
+    season : str
+        The season in format "YY/YY" (e.g., "23/24"). Used for file naming and column formatting.
+
+    Returns:
+    --------
+    pandas.DataFrame
+        A DataFrame with the following properties:
+        - Grouped by "team" with summed numeric stats.
+        - Columns ordered as: ["league", "season", "match date", "team", ...stats].
+        - "season" reformatted to "YY/YY" (e.g., "23/24").
+        - Sorted by "match date" (ascending).
+        - Saved to a Parquet file in the predefined output directory.
+
+    Example:
+    --------
+    >>> df_raw = mod_fotmob_get_all_team_stats_df()  # Fetch raw data
+    >>> df_summed = sum_FotMob_advanced_team_stats_df(
+    ...     df=df_raw,
+    ...     league="ENG-Premier-League",
+    ...     season="2023/2024"
+    ... )
+    >>> print(df_summed.head())
+    """
+    dtypes = {
+        "league": str,
+        "season": str,
+        "match date": "datetime64[ns]",
+        "matchup": str,
+        "team": str,
+        "Opponent": str,
+        "Blocked shots": float,
+        "Hit woodwork": float,
+        "Shots inside box": float,
+        "Shots off target": float,
+        "Shots on target": float,
+        "Shots outside box": float,
+        "Total shots": float,
+        "Expected goals (xG)": float,
+        "xG non-penalty": float,
+        "xG on target (xGOT)": float,
+        "xG open play": float,
+        "xG set play": float,
+        "Accurate crosses": float,
+        "Accurate long balls": float,
+        "Accurate passes": float,
+        "Offsides": float,
+        "Opposition half": float,
+        "Own half": float,
+        "Passes": float,
+        "Throws": float,
+        "Touches in opposition box": float,
+        "Accurate crosses (%)": float,
+        "Accurate long balls (%)": float,
+        "Accurate passes (%)": float,
+        "Blocks": float,
+        "Clearances": float,
+        "Interceptions": float,
+        "Keeper saves": float,
+        "Tackles won": float,
+        "Tackles won (%)": float,
+        "Aerial duels won": float,
+        "Duels won": float,
+        "Ground duels won": float,
+        "Successful dribbles": float,
+        "Aerial duels won (%)": float,
+        "Ground duels won (%)": float,
+        "Successful dribbles (%)": float,
+        "Red cards": float,
+        "Yellow cards": float,
+        "Big chances missed": float,
+        "Corners": float,
+        "Ball possession": float,
+        "Fouls committed": float,
+        "Big chances": float,
+    }
+
+    df = df.astype(dtypes)
+
+    columns_to_sum = [
+        "Blocked shots",
+        "Hit woodwork",
+        "Shots inside box",
+        "Shots off target",
+        "Shots on target",
+        "Shots outside box",
+        "Total shots",
+        "Expected goals (xG)",
+        "xG non-penalty",
+        "xG on target (xGOT)",
+        "xG open play",
+        "xG set play",
+        "Accurate crosses",
+        "Accurate long balls",
+        "Accurate passes",
+        "Offsides",
+        "Opposition half",
+        "Own half",
+        "Passes",
+        "Throws",
+        "Touches in opposition box",
+        "Accurate crosses (%)",
+        "Accurate long balls (%)",
+        "Accurate passes (%)",
+        "Blocks",
+        "Clearances",
+        "Interceptions",
+        "Keeper saves",
+        "Tackles won",
+        "Tackles won (%)",
+        "Aerial duels won",
+        "Duels won",
+        "Ground duels won",
+        "Successful dribbles",
+        "Aerial duels won (%)",
+        "Ground duels won (%)",
+        "Successful dribbles (%)",
+        "Red cards",
+        "Yellow cards",
+        "Big chances missed",
+        "Corners",
+        "Ball possession",
+        "Fouls committed",
+        "Big chances",
+    ]
+
+    df2 = df.groupby("team")[columns_to_sum].sum().reset_index().round(2)
+    final_df = pd.merge(
+        df2,
+        df[["league", "season", "match date", "team"]].drop_duplicates(),
+        on="team",
+        how="left",
+    )
+
+    final_df.drop_duplicates(subset=["team"], inplace=True)
+
+    cols = final_df.columns.tolist()
+    cols.remove("match date")
+    cols.remove("season")
+    cols.remove("league")
+    cols.insert(0, "league")
+    cols.insert(1, "season")
+    cols.insert(2, "match date")
+    final_df = final_df[cols]
+
+    final_df["season"] = (
+        final_df["season"].astype(str).str[:2]
+        + "/"
+        + final_df["season"].astype(str).str[2:]
+    )
+
+    final_df = final_df.sort_values(
+        by=["match date"], ascending=True, ignore_index=True
+    )
+
+    final_df.columns = [smart_title(col) for col in final_df.columns]
+    folder_league_name = league.split("-")[1]
+
+    # read and insert Club's badges
+    final_df["Badge"] = final_df["Team"].apply(
+        lambda x: rf"C:\Users\Vitor\Desktop\Football Data Analytics\My_Projects\Main level\media\team_logos\{folder_league_name}\{x.lower()}.png"
+    )
+
+    season_name = season.replace("/", "_")
+    league_name = league.replace("-", "_")
+
+    # Create directory to store data
+    output_dir = r"C:\Users\Vitor\Desktop\Football Data Analytics\My_Projects\Main level\data\clean_all_team_stats\sum"
+    os.makedirs(output_dir, exist_ok=True)
+
+    final_df.to_parquet(
+        rf"{output_dir}\sum_FotMob_advanced_team_stats_{league_name}_{season_name}.parquet"
+    )
+
+    return final_df
+
+
+def join_league_table_stats_to_sum_advanced_all_team(df, league, season):
+    locale.setlocale(locale.LC_ALL, "en_US.UTF-8")
+    ws = sd.FotMob(leagues=league, seasons=season, no_cache=False, no_store=False)
+    league_table = ws.read_league_table()
+    league_table.reset_index(inplace=True)
+    # Filtrar nomes de colunas com mais de 2 caracteres
+    cols_to_rename = [col for col in league_table.columns if len(col) > 2]
+
+    # Criar dicionário de renomeação com title case
+    rename_dict = {col: col.title() for col in cols_to_rename}
+
+    # Renomear as colunas
+    league_table.rename(columns=rename_dict, inplace=True)
+
+    df2 = sum_FotMob_advanced_team_stats_df(df, league, season)
+    final_df = pd.merge(
+        df2,
+        league_table[["Team", "MP", "W", "D", "L", "GF", "GA", "GD", "Pts"]],
+        on=["Team"],
+        how="left",
+    )
+    final_df.columns = [smart_title(col) for col in final_df.columns]
+
+    folder_league_name = league.split("-")[1]
+
+    # read and insert Club's badges
+    final_df["Badge"] = final_df["Team"].apply(
+        lambda x: rf"C:\Users\Vitor\Desktop\Football Data Analytics\My_Projects\Main level\media\team_logos\{folder_league_name}\{x.lower()}.png"
+    )
+    cols = final_df.columns.tolist()
+    cols.remove("Mp")
+    cols.remove("W")
+    cols.remove("D")
+    cols.remove("L")
+    cols.remove("Gf")
+    cols.remove("Ga")
+    cols.remove("Gd")
+    cols.remove("Pts")
+    cols.insert(4, "Mp")
+    cols.insert(5, "W")
+    cols.insert(6, "D")
+    cols.insert(7, "L")
+    cols.insert(8, "Gf")
+    cols.insert(9, "Ga")
+    cols.insert(10, "Gd")
+    cols.insert(11, "Pts")
+    final_df = final_df[cols]
+
+    season_name = season.replace("/", "_")
+    league_name = league.replace("-", "_")
+
+    # Create directory to store data
+    output_dir = r"C:\Users\Vitor\Desktop\Football Data Analytics\My_Projects\Main level\data\clean_all_team_stats\sum"
+    os.makedirs(output_dir, exist_ok=True)
+
+    final_df.to_parquet(
+        rf"{output_dir}\FotMob_League_Table_stats_with_sum_advanced_team_stats_{league_name}_{season_name}.parquet"
+    )
+
+    return final_df
