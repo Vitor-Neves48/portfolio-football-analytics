@@ -6,3 +6,5 @@ Throughout this portfolio, I use a wide range of tools—including packages, mod
 I’m driven by continuous learning and deeply interested in all aspects of Football Data Science and Analysis. This portfolio reflects that curiosity, aiming to cover a broad spectrum of the data workflow—including scraping, engineering, exploration, modeling, and visualization.
 
 Finally, I uphold a strict policy against irresponsible data scraping. No scraped data is stored in this repository, nor do I support practices that may negatively impact source websites. However, I believe that—when done responsibly, transparently, and solely for educational, non-commercial purposes—data scraping can be a powerful tool for learning. Respecting server limitations and terms of service is essential, and I view ethical data scraping as an opportunity to explore real-world datasets while upholding high standards of integrity and respect for data ownership.
+
+If you are reading this and have any doubts or are interested in my work, please feel free to contact me!
